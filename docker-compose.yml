@@ -1,0 +1,12 @@
+services:
+  server:
+    build: .
+    image: notes-server:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - notes-data:/data
+
+volumes:
+  notes-data:

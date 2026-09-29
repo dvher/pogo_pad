@@ -1,0 +1,5 @@
+/data/
+/notes-server
+*.db
+*.db-shm
+*.db-wal
