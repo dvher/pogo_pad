@@ -26,3 +26,12 @@ type SyncResponse struct {
 	Changes []Note `json:"changes"`
 	More    bool   `json:"more"` // true when more changes are pending; call again with Cursor
 }
+
+// E2EParams is the opaque end-to-end encryption setup shared by clients via
+// /api/v1/e2e. Salt feeds the client's key derivation; Check is a known
+// plaintext encrypted with the derived key so clients can verify a passphrase.
+type E2EParams struct {
+	KDF   string `json:"kdf"`
+	Salt  string `json:"salt"`
+	Check string `json:"check"`
+}

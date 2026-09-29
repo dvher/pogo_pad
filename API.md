@@ -51,6 +51,26 @@ Last write wins, per note:
 
 Changes that lose are dropped silently. Clients should apply incoming notes with the same rule, so they keep a local edit made after the request was sent.
 
+### End-to-end encryption (optional)
+
+Clients may encrypt notes before upload. The server stores only ciphertext and never sees the key.
+
+When E2E is on, a note is sent like this:
+- `content = "e2e:v1:" + base64(nonce ‖ AES-256-GCM(json{"content","color"}))`
+- `color = ""`
+
+The key is `Argon2id(passphrase, salt, t=3, m=64MiB, p=4, 32 bytes)`.
+
+The server keeps the shared, non-secret setup as an opaque blob:
+
+| Request | Result |
+|---|---|
+| `GET /api/v1/e2e` | `200 {"kdf":"argon2id","salt":"<b64>","check":"<b64>"}` or `404` if not set up |
+| `PUT /api/v1/e2e` | stores the blob; `409` if already set (append `?force=1` to replace, e.g. after a passphrase change) |
+| `DELETE /api/v1/e2e` | `204`; turns E2E off (clients then re-upload plaintext) |
+
+`check` is the string `notes-e2e-check`, encrypted the same way as a note. Clients decrypt it to confirm a passphrase is right.
+
 ### What is synced
 
 Synced: `id`, `content`, `color`, `deleted`.

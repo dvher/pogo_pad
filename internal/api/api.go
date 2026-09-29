@@ -35,6 +35,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.Handle("POST /api/v1/sync", s.auth(http.HandlerFunc(s.sync)))
+	mux.Handle("GET /api/v1/e2e", s.auth(http.HandlerFunc(s.getE2E)))
+	mux.Handle("PUT /api/v1/e2e", s.auth(http.HandlerFunc(s.putE2E)))
+	mux.Handle("DELETE /api/v1/e2e", s.auth(http.HandlerFunc(s.deleteE2E)))
 	return logRequests(mux)
 }
 
@@ -81,6 +84,59 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// The e2e endpoints store the salt and key-check value that clients need to
+// derive and verify the shared end-to-end key. The server never sees the key.
+const e2eKey = "e2e"
+
+func (s *Server) getE2E(w http.ResponseWriter, r *http.Request) {
+	v, err := s.store.GetMeta(r.Context(), e2eKey)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "end-to-end encryption is not set up")
+		return
+	}
+	if err != nil {
+		log.Printf("e2e get: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(v))
+}
+
+func (s *Server) putE2E(w http.ResponseWriter, r *http.Request) {
+	var body model.E2EParams
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.Salt == "" || body.Check == "" {
+		writeError(w, http.StatusBadRequest, "salt and check are required")
+		return
+	}
+	force := r.URL.Query().Get("force") == "1"
+	raw, _ := json.Marshal(body)
+	err := s.store.SetMeta(r.Context(), e2eKey, string(raw), force)
+	if errors.Is(err, store.ErrExists) {
+		writeError(w, http.StatusConflict, "end-to-end encryption is already set up")
+		return
+	}
+	if err != nil {
+		log.Printf("e2e put: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func (s *Server) deleteE2E(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteMeta(r.Context(), e2eKey); err != nil {
+		log.Printf("e2e delete: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func validate(req model.SyncRequest) error {

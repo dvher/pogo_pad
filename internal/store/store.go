@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS notes (
 	rev        INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS notes_rev ON notes(rev);
+CREATE TABLE IF NOT EXISTS meta (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tokens (
 	id           INTEGER PRIMARY KEY AUTOINCREMENT,
 	name         TEXT    NOT NULL,
@@ -137,6 +141,43 @@ func (s *Store) Sync(ctx context.Context, cursor int64, changes []model.Note, li
 		return model.SyncResponse{}, err
 	}
 	return resp, tx.Commit()
+}
+
+// ErrExists is returned by SetMeta when the key is already set and
+// overwrite was not requested.
+var ErrExists = errors.New("already set")
+
+// GetMeta returns the opaque value stored under key.
+func (s *Store) GetMeta(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return v, err
+}
+
+// SetMeta stores value under key. Unless overwrite is true it fails with
+// ErrExists when the key already has a value.
+func (s *Store) SetMeta(ctx context.Context, key, value string, overwrite bool) error {
+	q := `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING`
+	if overwrite {
+		q = `INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+	}
+	res, err := s.db.ExecContext(ctx, q, key, value)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrExists
+	}
+	return nil
+}
+
+// DeleteMeta removes key.
+func (s *Store) DeleteMeta(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM meta WHERE key = ?`, key)
+	return err
 }
 
 // Token is an API token record (the secret itself is never stored).

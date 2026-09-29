@@ -60,3 +60,42 @@ func TestSyncEndpoint(t *testing.T) {
 		t.Errorf("health: %d", h.StatusCode)
 	}
 }
+
+func TestE2EEndpoints(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "e2e.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	secret, _ := st.CreateToken(context.Background(), "test")
+	srv := httptest.NewServer(New(st, "test").Handler())
+	defer srv.Close()
+
+	do := func(method, path, body string) int {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+secret)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode
+	}
+	params := `{"kdf":"argon2id","salt":"c2FsdA","check":"Y2hr"}`
+	steps := []struct {
+		method, path, body string
+		want               int
+	}{
+		{"GET", "/api/v1/e2e", "", 404},
+		{"PUT", "/api/v1/e2e", params, 200},
+		{"GET", "/api/v1/e2e", "", 200},
+		{"PUT", "/api/v1/e2e", params, 409},
+		{"PUT", "/api/v1/e2e?force=1", params, 200},
+		{"DELETE", "/api/v1/e2e", "", 204},
+		{"GET", "/api/v1/e2e", "", 404},
+	}
+	for i, s := range steps {
+		if got := do(s.method, s.path, s.body); got != s.want {
+			t.Errorf("step %d %s %s: got %d want %d", i, s.method, s.path, got, s.want)
+		}
+	}
+}
