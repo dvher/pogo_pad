@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"notes-server/internal/model"
-	"notes-server/internal/store"
+	"github.com/dvher/pogo_pad/internal/model"
+	"github.com/dvher/pogo_pad/internal/store"
 )
 
 func TestSyncEndpoint(t *testing.T) {
@@ -38,7 +38,7 @@ func TestSyncEndpoint(t *testing.T) {
 	if r := post("", `{}`); r.StatusCode != 401 {
 		t.Errorf("no token: %d", r.StatusCode)
 	}
-	if r := post("nts_wrong", `{}`); r.StatusCode != 401 {
+	if r := post("pogo_wrong", `{}`); r.StatusCode != 401 {
 		t.Errorf("bad token: %d", r.StatusCode)
 	}
 	if r := post(secret, `{"changes":[{"id":""}]}`); r.StatusCode != 400 {

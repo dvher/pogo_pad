@@ -1,4 +1,4 @@
-// Command notes-server is the self-hosted sync backend for the notes apps.
+// Command pogo-pad is the self-hosted sync server for Pogo sticky notes.
 package main
 
 import (
@@ -14,22 +14,22 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"notes-server/internal/api"
-	"notes-server/internal/store"
+	"github.com/dvher/pogo_pad/internal/api"
+	"github.com/dvher/pogo_pad/internal/store"
 )
 
 var version = "dev"
 
-const usage = `notes-server — self-hosted sync backend
+const usage = `pogo-pad — self-hosted sync server for Pogo
 
 Usage:
-  notes-server serve [--addr :8080] [--db PATH] [--tls-cert FILE --tls-key FILE]
-  notes-server token create [--db PATH] --name NAME
-  notes-server token list [--db PATH]
-  notes-server token revoke [--db PATH] ID|NAME
-  notes-server version
+  pogo-pad serve [--addr :8080] [--db PATH] [--tls-cert FILE --tls-key FILE]
+  pogo-pad token create [--db PATH] --name NAME
+  pogo-pad token list [--db PATH]
+  pogo-pad token revoke [--db PATH] ID|NAME
+  pogo-pad version
 
-The database path defaults to $NOTES_DB or ./data/notes.db.
+The database path defaults to $POGO_DB or ./data/pogo-pad.db.
 `
 
 func main() {
@@ -59,18 +59,18 @@ func main() {
 }
 
 func defaultDB() string {
-	if p := os.Getenv("NOTES_DB"); p != "" {
+	if p := os.Getenv("POGO_DB"); p != "" {
 		return p
 	}
-	return "./data/notes.db"
+	return "./data/pogo-pad.db"
 }
 
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", envOr("NOTES_ADDR", ":8080"), "listen address")
+	addr := fs.String("addr", envOr("POGO_ADDR", ":8080"), "listen address")
 	dbPath := fs.String("db", defaultDB(), "SQLite database path")
-	cert := fs.String("tls-cert", os.Getenv("NOTES_TLS_CERT"), "TLS certificate file (optional)")
-	key := fs.String("tls-key", os.Getenv("NOTES_TLS_KEY"), "TLS key file (optional)")
+	cert := fs.String("tls-cert", os.Getenv("POGO_TLS_CERT"), "TLS certificate file (optional)")
+	key := fs.String("tls-key", os.Getenv("POGO_TLS_KEY"), "TLS key file (optional)")
 	fs.Parse(args)
 
 	st, err := store.Open(*dbPath)
@@ -96,7 +96,7 @@ func serve(args []string) error {
 		srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("notes-server %s listening on %s (db %s)", version, *addr, *dbPath)
+	log.Printf("pogo-pad %s listening on %s (db %s)", version, *addr, *dbPath)
 	if *cert != "" || *key != "" {
 		err = srv.ListenAndServeTLS(*cert, *key)
 	} else {
@@ -133,7 +133,7 @@ func token(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "Token for %q (shown only once — paste it into the app's Sync settings):\n", *name)
+		fmt.Fprintf(os.Stderr, "Token for %q (shown only once — paste it into Pogo's Sync settings):\n", *name)
 		fmt.Println(secret)
 	case "list":
 		tokens, err := st.ListTokens(ctx)

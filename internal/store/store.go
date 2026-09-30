@@ -16,8 +16,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"notes-server/internal/lww"
-	"notes-server/internal/model"
+	"github.com/dvher/pogo_pad/internal/lww"
+	"github.com/dvher/pogo_pad/internal/model"
 )
 
 // ErrNotFound is returned when a token lookup or revoke matches nothing.
@@ -200,7 +200,7 @@ func (s *Store) CreateToken(ctx context.Context, name string) (string, error) {
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	secret := "nts_" + base64.RawURLEncoding.EncodeToString(buf)
+	secret := "pogo_" + base64.RawURLEncoding.EncodeToString(buf)
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO tokens (name, hash, created_at) VALUES (?, ?, ?)`,
 		name, hashToken(secret), time.Now().Unix())

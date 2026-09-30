@@ -1,7 +1,7 @@
 // Package lww implements last-write-wins conflict resolution for notes.
 package lww
 
-import "notes-server/internal/model"
+import "github.com/dvher/pogo_pad/internal/model"
 
 // Wins reports whether incoming should replace existing.
 // The newer UpdatedAt wins; ties are broken deterministically by DeviceID

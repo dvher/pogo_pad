@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"notes-server/internal/model"
-	"notes-server/internal/store"
+	"github.com/dvher/pogo_pad/internal/model"
+	"github.com/dvher/pogo_pad/internal/store"
 )
 
 const (

@@ -1,4 +1,4 @@
-module notes-server
+module github.com/dvher/pogo_pad
 
 go 1.26.7
 

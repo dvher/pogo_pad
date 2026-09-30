@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"notes-server/internal/model"
+	"github.com/dvher/pogo_pad/internal/model"
 )
 
 func open(t *testing.T) *Store {
@@ -87,7 +87,7 @@ func TestTokens(t *testing.T) {
 	if ok, _ := s.Authenticate(ctx, secret); !ok {
 		t.Fatal("valid token rejected")
 	}
-	if ok, _ := s.Authenticate(ctx, "nts_bogus"); ok {
+	if ok, _ := s.Authenticate(ctx, "pogo_bogus"); ok {
 		t.Fatal("bogus token accepted")
 	}
 	if _, err := s.RevokeToken(ctx, "laptop"); err != nil {

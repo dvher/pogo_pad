@@ -3,7 +3,7 @@ package lww
 import (
 	"testing"
 
-	"notes-server/internal/model"
+	"github.com/dvher/pogo_pad/internal/model"
 )
 
 func TestWins(t *testing.T) {
