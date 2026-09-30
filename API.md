@@ -5,8 +5,12 @@ The Pogo desktop and mobile apps copy these types. All bodies are JSON.
 ## Auth
 
 Every endpoint except `/health` requires `Authorization: Bearer <token>`.
-Tokens are created on the server with `pogo-pad token create --name <device>`.
+Tokens are created on the server with `pogo-pad token create [--user <user>] --name <device>`.
 A missing or invalid token returns `401 {"error": "..."}`.
+
+Each token belongs to one user, and every endpoint acts only on that user's data: notes, revs and
+the E2E setup are all per user. Two users can use the same note id without conflict. Revs increase
+per user, so a cursor is only meaningful for the user that received it.
 
 ## `GET /api/v1/health`
 

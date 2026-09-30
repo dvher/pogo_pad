@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +46,15 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.version})
 }
 
+type userKey struct{}
+
+// userID returns the id of the user whose token authenticated r.
+func userID(r *http.Request) int64 {
+	return r.Context().Value(userKey{}).(int64)
+}
+
+// auth checks the bearer token and records its owner in the request context,
+// so every handler behind it works only on that user's data.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secret, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -52,7 +62,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		valid, err := s.store.Authenticate(r.Context(), secret)
+		uid, valid, err := s.store.Authenticate(r.Context(), secret)
 		if err != nil {
 			log.Printf("auth: %v", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
@@ -62,7 +72,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey{}, uid)))
 	})
 }
 
@@ -77,7 +87,7 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	resp, err := s.store.Sync(r.Context(), req.Cursor, req.Changes, pageSize)
+	resp, err := s.store.Sync(r.Context(), userID(r), req.Cursor, req.Changes, pageSize)
 	if err != nil {
 		log.Printf("sync: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -86,12 +96,13 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// The e2e endpoints store the salt and key-check value that clients need to
-// derive and verify the shared end-to-end key. The server never sees the key.
+// The e2e endpoints store the salt and key-check value that a user's clients
+// need to derive and verify their shared end-to-end key. Each user has their
+// own. The server never sees the key.
 const e2eKey = "e2e"
 
 func (s *Server) getE2E(w http.ResponseWriter, r *http.Request) {
-	v, err := s.store.GetMeta(r.Context(), e2eKey)
+	v, err := s.store.GetMeta(r.Context(), userID(r), e2eKey)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "end-to-end encryption is not set up")
 		return
@@ -117,7 +128,7 @@ func (s *Server) putE2E(w http.ResponseWriter, r *http.Request) {
 	}
 	force := r.URL.Query().Get("force") == "1"
 	raw, _ := json.Marshal(body)
-	err := s.store.SetMeta(r.Context(), e2eKey, string(raw), force)
+	err := s.store.SetMeta(r.Context(), userID(r), e2eKey, string(raw), force)
 	if errors.Is(err, store.ErrExists) {
 		writeError(w, http.StatusConflict, "end-to-end encryption is already set up")
 		return
@@ -131,7 +142,7 @@ func (s *Server) putE2E(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteE2E(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.DeleteMeta(r.Context(), e2eKey); err != nil {
+	if err := s.store.DeleteMeta(r.Context(), userID(r), e2eKey); err != nil {
 		log.Printf("e2e delete: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
