@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed on: $unformatted"
+            exit 1
+          fi
+      - name: go mod tidy
+        run: go mod tidy -diff
+      - run: go vet ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      - name: go test
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - name: Coverage
+        run: go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: arm }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build without cgo
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o /dev/null ./cmd/pogo-pad
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: pogo-pad:ci
+          build-args: VERSION=ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: |
+          docker run --rm pogo-pad:ci version | grep -qx "ci-${{ github.sha }}"
+          docker run -d --name pad -p 8080:8080 pogo-pad:ci
+          for i in $(seq 30); do
+            curl -fsS http://127.0.0.1:8080/api/v1/health && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/api/v1/health
+          token=$(docker exec pad pogo-pad token create --name ci)
+          curl -fsS -H "Authorization: Bearer $token" -d '{"changes":[]}' http://127.0.0.1:8080/api/v1/sync
+      - name: Server logs
+        if: failure()
+        run: docker logs pad
+
+  # Pogo and Pogo Pocket run their sync tests against a Pogo Pad built from a
+  # sibling checkout, so run them here too: a server change that breaks the
+  # wire format fails this PR, not the apps' next build.
+  clients:
+    name: Client sync tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: server
+      - uses: actions/checkout@v5
+        with:
+          repository: dvher/pogo
+          path: desktop
+      - uses: actions/checkout@v5
+        with:
+          repository: dvher/pogo_pocket
+          path: mobile
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: |
+            server/go.sum
+            desktop/go.sum
+            mobile/core/go.sum
+      - uses: actions/setup-node@v5
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+      - name: Install GTK and WebKit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev
+      - name: Build the Pogo frontend
+        working-directory: desktop/frontend
+        run: npm ci && npm run build
+      - name: Pogo sync tests
+        working-directory: desktop
+        run: go test -count=1 -run Sync -v .
+      - name: Pogo Pocket core tests
+        working-directory: mobile/core
+        run: go test -count=1 -v ./...

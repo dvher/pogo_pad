@@ -128,3 +128,31 @@ func TestE2EEndpoints(t *testing.T) {
 		t.Errorf("alice's delete removed bob's e2e: %d", got)
 	}
 }
+
+func TestValidate(t *testing.T) {
+	note := func(edit func(*model.Note)) model.SyncRequest {
+		n := model.Note{ID: "n1", Content: "hi", Color: "yellow", UpdatedAt: 1, DeviceID: "d"}
+		edit(&n)
+		return model.SyncRequest{Changes: []model.Note{n}}
+	}
+	if err := validate(note(func(*model.Note) {})); err != nil {
+		t.Fatalf("valid note: %v", err)
+	}
+	if err := validate(note(func(n *model.Note) { n.Content = strings.Repeat("x", maxContent) })); err != nil {
+		t.Fatalf("note at the size limit: %v", err)
+	}
+	bad := map[string]model.SyncRequest{
+		"negative cursor":  {Cursor: -1},
+		"too many changes": {Changes: make([]model.Note, maxChangesSent+1)},
+		"empty id":         note(func(n *model.Note) { n.ID = "" }),
+		"long id":          note(func(n *model.Note) { n.ID = strings.Repeat("x", maxIDLen+1) }),
+		"no updated_at":    note(func(n *model.Note) { n.UpdatedAt = 0 }),
+		"big content":      note(func(n *model.Note) { n.Content = strings.Repeat("x", maxContent+1) }),
+		"long color":       note(func(n *model.Note) { n.Color = strings.Repeat("x", maxColorLen+1) }),
+	}
+	for name, req := range bad {
+		if validate(req) == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

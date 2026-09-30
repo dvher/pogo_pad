@@ -242,8 +242,10 @@ func TestLimiter(t *testing.T) {
 	now := time.Unix(0, 0)
 	l := newLimiter(2, time.Minute)
 	l.now = func() time.Time { return now }
-	if !l.allow("a") || !l.allow("a") || l.allow("a") {
-		t.Fatal("burst")
+	for i, want := range []bool{true, true, false} {
+		if l.allow("a") != want {
+			t.Fatalf("burst: attempt %d allowed = %v", i+1, !want)
+		}
 	}
 	if !l.allow("b") {
 		t.Fatal("addresses share a bucket")
