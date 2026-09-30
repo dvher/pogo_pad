@@ -173,11 +173,11 @@ func TestTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	bobSecret, _ := s.CreateToken(ctx, bob, "laptop")
-	if uid, ok, _ := s.Authenticate(ctx, secret); !ok || uid != alice {
-		t.Fatalf("valid token: uid %d ok %v", uid, ok)
+	if a, ok, _ := s.Authenticate(ctx, secret); !ok || a.UserID != alice || a.TokenID != 1 {
+		t.Fatalf("valid token: %+v ok %v", a, ok)
 	}
-	if uid, ok, _ := s.Authenticate(ctx, bobSecret); !ok || uid != bob {
-		t.Fatalf("bob's token: uid %d ok %v", uid, ok)
+	if a, ok, _ := s.Authenticate(ctx, bobSecret); !ok || a.UserID != bob {
+		t.Fatalf("bob's token: %+v ok %v", a, ok)
 	}
 	if _, ok, _ := s.Authenticate(ctx, "pogo_bogus"); ok {
 		t.Fatal("bogus token accepted")
@@ -244,7 +244,8 @@ func TestMigrateLegacy(t *testing.T) {
 	defer s.Close()
 	ctx := context.Background()
 
-	uid, ok, err := s.Authenticate(ctx, secret)
+	a, ok, err := s.Authenticate(ctx, secret)
+	uid := a.UserID
 	if err != nil || !ok {
 		t.Fatalf("legacy token: ok %v err %v", ok, err)
 	}

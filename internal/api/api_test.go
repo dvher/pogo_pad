@@ -21,7 +21,7 @@ func TestSyncEndpoint(t *testing.T) {
 	defer st.Close()
 	u, _ := st.CreateUser(context.Background(), "alice")
 	secret, _ := st.CreateToken(context.Background(), u.ID, "test")
-	srv := httptest.NewServer(New(st, "test").Handler())
+	srv := httptest.NewServer(New(st, Config{Version: "test"}).Handler())
 	defer srv.Close()
 
 	post := func(token, body string) *http.Response {
@@ -83,7 +83,7 @@ func TestE2EEndpoints(t *testing.T) {
 	bob, _ := st.CreateUser(ctx, "bob")
 	secret, _ := st.CreateToken(ctx, alice.ID, "test")
 	bobSecret, _ := st.CreateToken(ctx, bob.ID, "test")
-	srv := httptest.NewServer(New(st, "test").Handler())
+	srv := httptest.NewServer(New(st, Config{Version: "test"}).Handler())
 	defer srv.Close()
 
 	doAs := func(token, method, path, body string) int {

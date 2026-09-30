@@ -27,17 +27,56 @@ var (
 	// ErrAmbiguous is returned by RevokeToken when a token name matches
 	// tokens of more than one user.
 	ErrAmbiguous = errors.New("matches tokens of more than one user")
+	// ErrQuota is returned by Sync when the changes would take a user over
+	// one of the store's Limits.
+	ErrQuota = errors.New("quota exceeded")
 )
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	limits Limits
 }
 
-// schemaVersion is stored in PRAGMA user_version. Version 0 is the original
-// single-user schema, which had no users table.
-const schemaVersion = 1
+// Limits caps what each user may store. Zero means unlimited.
+type Limits struct {
+	MaxNotes int   // notes that are not deleted
+	MaxBytes int64 // total content bytes of notes that are not deleted
+}
 
-const schema = `
+// SetLimits sets the per-user quotas enforced by Sync.
+func (s *Store) SetLimits(l Limits) { s.limits = l }
+
+// Limits returns the per-user quotas.
+func (s *Store) Limits() Limits { return s.limits }
+
+// Usage is what a user currently stores.
+type Usage struct {
+	Notes int
+	Bytes int64
+}
+
+func usage(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, userID int64) (Usage, error) {
+	var u Usage
+	err := q.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0)
+		FROM notes WHERE user_id = ? AND deleted = 0`, userID).Scan(&u.Notes, &u.Bytes)
+	return u, err
+}
+
+// Usage returns what userID currently stores.
+func (s *Store) Usage(ctx context.Context, userID int64) (Usage, error) {
+	return usage(ctx, s.db, userID)
+}
+
+// migrations[i] upgrades the schema from version i to i+1; the version is
+// stored in PRAGMA user_version. Version 0 is the original single-user
+// schema, which had no users table.
+var migrations = []func(*sql.Tx) error{migrateMultiUser, migrateAccounts}
+
+// schemaV1 is the multi-user schema.
+const schemaV1 = `
 CREATE TABLE IF NOT EXISTS users (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
 	name       TEXT    NOT NULL UNIQUE,
@@ -73,6 +112,21 @@ CREATE TABLE IF NOT EXISTS tokens (
 CREATE INDEX IF NOT EXISTS tokens_user ON tokens(user_id);
 `
 
+// schemaV2 adds HTTP accounts: an optional email and password per user,
+// and single-use invite codes for invite-only signup.
+const schemaV2 = `
+ALTER TABLE users ADD COLUMN email TEXT;
+ALTER TABLE users ADD COLUMN password_hash TEXT;
+CREATE UNIQUE INDEX users_email ON users(email);
+CREATE TABLE invites (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	hash       TEXT    NOT NULL UNIQUE,
+	created_at INTEGER NOT NULL,
+	used_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+	used_at    INTEGER
+);
+`
+
 // LegacyUser is the user that owns the data of a database created before
 // multi-user support.
 const LegacyUser = "default"
@@ -98,23 +152,36 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// migrate brings the schema up to schemaVersion. A version 0 database that
-// already has tables is single-user: its notes, meta and tokens are moved to
-// LegacyUser, keeping token ids and note revs so existing clients carry on.
+// migrate brings the schema up to the latest version, one step at a time.
 func migrate(db *sql.DB) error {
 	var ver int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
 		return err
 	}
-	if ver >= schemaVersion {
-		return nil
+	for ; ver < len(migrations); ver++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if err := migrations[ver](tx); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("to version %d: %w", ver+1, err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, ver+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return nil
+}
 
+// migrateMultiUser creates the multi-user schema. A database that already
+// has tables is single-user: its notes, meta and tokens are moved to
+// LegacyUser, keeping token ids and note revs so existing clients carry on.
+func migrateMultiUser(tx *sql.Tx) error {
 	var legacy bool
 	if err := tx.QueryRow(
 		`SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'notes')`,
@@ -128,50 +195,55 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
-	if _, err := tx.Exec(schema); err != nil {
+	if _, err := tx.Exec(schemaV1); err != nil {
 		return err
 	}
-	if legacy {
-		var hasData bool
-		if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM notes_v0) OR EXISTS (SELECT 1 FROM meta_v0)
-			OR EXISTS (SELECT 1 FROM tokens_v0)`).Scan(&hasData); err != nil {
+	if !legacy {
+		return nil
+	}
+	var hasData bool
+	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM notes_v0) OR EXISTS (SELECT 1 FROM meta_v0)
+		OR EXISTS (SELECT 1 FROM tokens_v0)`).Scan(&hasData); err != nil {
+		return err
+	}
+	if hasData {
+		var uid int64
+		if err := tx.QueryRow(`INSERT INTO users (name, created_at) VALUES (?, ?) RETURNING id`,
+			LegacyUser, time.Now().Unix()).Scan(&uid); err != nil {
 			return err
 		}
-		if hasData {
-			var uid int64
-			if err := tx.QueryRow(`INSERT INTO users (name, created_at) VALUES (?, ?) RETURNING id`,
-				LegacyUser, time.Now().Unix()).Scan(&uid); err != nil {
-				return err
-			}
-			for _, q := range []string{
-				`INSERT INTO notes (user_id, id, content, color, deleted, updated_at, device_id, rev)
-					SELECT ?, id, content, color, deleted, updated_at, device_id, rev FROM notes_v0`,
-				`INSERT INTO meta (user_id, key, value) SELECT ?, key, value FROM meta_v0`,
-				`INSERT INTO tokens (id, user_id, name, hash, created_at, last_used_at, revoked)
-					SELECT id, ?, name, hash, created_at, last_used_at, revoked FROM tokens_v0`,
-			} {
-				if _, err := tx.Exec(q, uid); err != nil {
-					return err
-				}
-			}
-		}
-		for _, t := range []string{"notes_v0", "meta_v0", "tokens_v0"} {
-			if _, err := tx.Exec(`DROP TABLE ` + t); err != nil {
+		for _, q := range []string{
+			`INSERT INTO notes (user_id, id, content, color, deleted, updated_at, device_id, rev)
+				SELECT ?, id, content, color, deleted, updated_at, device_id, rev FROM notes_v0`,
+			`INSERT INTO meta (user_id, key, value) SELECT ?, key, value FROM meta_v0`,
+			`INSERT INTO tokens (id, user_id, name, hash, created_at, last_used_at, revoked)
+				SELECT id, ?, name, hash, created_at, last_used_at, revoked FROM tokens_v0`,
+		} {
+			if _, err := tx.Exec(q, uid); err != nil {
 				return err
 			}
 		}
 	}
-	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, schemaVersion)); err != nil {
-		return err
+	for _, t := range []string{"notes_v0", "meta_v0", "tokens_v0"} {
+		if _, err := tx.Exec(`DROP TABLE ` + t); err != nil {
+			return err
+		}
 	}
-	return tx.Commit()
+	return nil
+}
+
+func migrateAccounts(tx *sql.Tx) error {
+	_, err := tx.Exec(schemaV2)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
 // Sync applies incoming changes to userID's notes with last-write-wins and
 // returns up to limit of their notes whose rev is greater than cursor. Revs
-// are allocated per user.
+// are allocated per user. If the changes would leave the user over the
+// store's Limits, and above where they started, nothing is applied and
+// ErrQuota is returned; changes that only shrink usage always go through.
 func (s *Store) Sync(ctx context.Context, userID, cursor int64, changes []model.Note, limit int) (model.SyncResponse, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -182,6 +254,13 @@ func (s *Store) Sync(ctx context.Context, userID, cursor int64, changes []model.
 	var maxRev int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(rev), 0) FROM notes WHERE user_id = ?`, userID).Scan(&maxRev); err != nil {
 		return model.SyncResponse{}, err
+	}
+	limited := len(changes) > 0 && (s.limits.MaxNotes > 0 || s.limits.MaxBytes > 0)
+	var before Usage
+	if limited {
+		if before, err = usage(ctx, tx, userID); err != nil {
+			return model.SyncResponse{}, err
+		}
 	}
 
 	for _, in := range changes {
@@ -208,6 +287,17 @@ func (s *Store) Sync(ctx context.Context, userID, cursor int64, changes []model.
 			userID, in.ID, in.Content, in.Color, in.Deleted, in.UpdatedAt, in.DeviceID, maxRev,
 		); err != nil {
 			return model.SyncResponse{}, err
+		}
+	}
+
+	if limited {
+		after, err := usage(ctx, tx, userID)
+		if err != nil {
+			return model.SyncResponse{}, err
+		}
+		if s.limits.MaxNotes > 0 && after.Notes > s.limits.MaxNotes && after.Notes > before.Notes ||
+			s.limits.MaxBytes > 0 && after.Bytes > s.limits.MaxBytes && after.Bytes > before.Bytes {
+			return model.SyncResponse{}, ErrQuota
 		}
 	}
 
@@ -278,11 +368,13 @@ func (s *Store) DeleteMeta(ctx context.Context, userID int64, key string) error 
 
 // User is an account whose notes are kept apart from every other user's.
 type User struct {
-	ID        int64
-	Name      string
-	CreatedAt time.Time
-	Tokens    int // active (non-revoked) tokens
-	Notes     int // notes that are not deleted
+	ID          int64
+	Name        string
+	Email       string // empty if none
+	HasPassword bool   // can sign in over HTTP
+	CreatedAt   time.Time
+	Tokens      int // active (non-revoked) tokens
+	Usage
 }
 
 // CreateUser adds a user. It fails with ErrExists if the name is taken.
@@ -299,7 +391,16 @@ func (s *Store) CreateUser(ctx context.Context, name string) (User, error) {
 
 // GetUser looks a user up by name.
 func (s *Store) GetUser(ctx context.Context, name string) (User, error) {
-	users, err := s.listUsers(ctx, `WHERE u.name = ?`, name)
+	return s.getUser(ctx, `WHERE u.name = ?`, name)
+}
+
+// GetUserByID looks a user up by id.
+func (s *Store) GetUserByID(ctx context.Context, id int64) (User, error) {
+	return s.getUser(ctx, `WHERE u.id = ?`, id)
+}
+
+func (s *Store) getUser(ctx context.Context, where string, arg any) (User, error) {
+	users, err := s.listUsers(ctx, where, arg)
 	if err != nil {
 		return User{}, err
 	}
@@ -316,9 +417,11 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 
 func (s *Store) listUsers(ctx context.Context, where string, args ...any) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.id, u.name, u.created_at,
+		SELECT u.id, u.name, COALESCE(u.email, ''), u.password_hash IS NOT NULL, u.created_at,
 			(SELECT COUNT(*) FROM tokens t WHERE t.user_id = u.id AND t.revoked = 0),
-			(SELECT COUNT(*) FROM notes n WHERE n.user_id = u.id AND n.deleted = 0)
+			(SELECT COUNT(*) FROM notes n WHERE n.user_id = u.id AND n.deleted = 0),
+			(SELECT COALESCE(SUM(LENGTH(CAST(n.content AS BLOB))), 0) FROM notes n
+				WHERE n.user_id = u.id AND n.deleted = 0)
 		FROM users u `+where+` ORDER BY u.id`, args...)
 	if err != nil {
 		return nil, err
@@ -328,7 +431,7 @@ func (s *Store) listUsers(ctx context.Context, where string, args ...any) ([]Use
 	for rows.Next() {
 		var u User
 		var created int64
-		if err := rows.Scan(&u.ID, &u.Name, &created, &u.Tokens, &u.Notes); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.HasPassword, &created, &u.Tokens, &u.Notes, &u.Bytes); err != nil {
 			return nil, err
 		}
 		u.CreatedAt = time.Unix(created, 0)
@@ -364,6 +467,13 @@ func (s *Store) DeleteUser(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteUserByID removes a user together with all their notes, settings and
+// tokens.
+func (s *Store) DeleteUserByID(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	return err
+}
+
 // Token is an API token record (the secret itself is never stored).
 type Token struct {
 	ID         int64
@@ -382,28 +492,49 @@ func hashToken(secret string) string {
 // CreateToken generates a new token called name for userID and returns the
 // plaintext secret.
 func (s *Store) CreateToken(ctx context.Context, userID int64, name string) (string, error) {
+	return createToken(ctx, s.db, userID, name)
+}
+
+type execer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func newSecret(prefix string) (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	secret := "pogo_" + base64.RawURLEncoding.EncodeToString(buf)
-	_, err := s.db.ExecContext(ctx,
+	return prefix + base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func createToken(ctx context.Context, db execer, userID int64, name string) (string, error) {
+	secret, err := newSecret("pogo_")
+	if err != nil {
+		return "", err
+	}
+	_, err = db.ExecContext(ctx,
 		`INSERT INTO tokens (user_id, name, hash, created_at) VALUES (?, ?, ?, ?)`,
 		userID, name, hashToken(secret), time.Now().Unix())
 	return secret, err
 }
 
+// Auth identifies the token a request was made with.
+type Auth struct {
+	UserID  int64
+	TokenID int64
+}
+
 // Authenticate checks that secret is a valid, non-revoked token, records its
-// use and returns the id of the user it belongs to. ok is false for an
+// use and returns the token and the user it belongs to. ok is false for an
 // unknown or revoked token.
-func (s *Store) Authenticate(ctx context.Context, secret string) (userID int64, ok bool, err error) {
+func (s *Store) Authenticate(ctx context.Context, secret string) (a Auth, ok bool, err error) {
 	err = s.db.QueryRowContext(ctx,
-		`UPDATE tokens SET last_used_at = ? WHERE hash = ? AND revoked = 0 RETURNING user_id`,
-		time.Now().Unix(), hashToken(secret)).Scan(&userID)
+		`UPDATE tokens SET last_used_at = ? WHERE hash = ? AND revoked = 0 RETURNING user_id, id`,
+		time.Now().Unix(), hashToken(secret)).Scan(&a.UserID, &a.TokenID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
+		return Auth{}, false, nil
 	}
-	return userID, err == nil, err
+	return a, err == nil, err
 }
 
 // ListTokens returns the tokens of userID, or of every user when userID is 0.
