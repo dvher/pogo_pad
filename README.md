@@ -1,6 +1,6 @@
 # 🟨 Pogo Pad
 
-**The self-hosted landing pad for [Pogo](https://github.com/dvher/pogo) sticky notes.**
+**The self-hosted landing pad for [Pogo](https://github.com/dvher/pogo) sticky notes, on the desktop and in [Pogo Pocket](https://github.com/dvher/pogo_pocket) on your phone.**
 
 Your notes bounce between devices, and Pogo Pad is where they land. It's a single Go binary with
 a SQLite database: no cgo, no external services, nothing to configure beyond a port. It runs on a
@@ -67,7 +67,7 @@ Tokens are sent in a header, so use HTTPS for anything outside a trusted home ne
 go test ./...
 ```
 
-The wire protocol is documented in [API.md](API.md), and the Pogo apps implement exactly that.
+The wire protocol is documented in [API.md](API.md). Pogo and Pogo Pocket share one implementation of it (Pogo's `pkg/pogosync`).
 
 ## License
 

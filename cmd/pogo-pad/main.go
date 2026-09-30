@@ -133,7 +133,7 @@ func token(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "Token for %q (shown only once — paste it into Pogo's Sync settings):\n", *name)
+		fmt.Fprintf(os.Stderr, "Token for %q (shown only once — paste it into Pogo's or Pogo Pocket's Sync settings):\n", *name)
 		fmt.Println(secret)
 	case "list":
 		tokens, err := st.ListTokens(ctx)
