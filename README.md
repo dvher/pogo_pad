@@ -68,3 +68,7 @@ go test ./...
 ```
 
 The wire protocol is documented in [API.md](API.md), and the Pogo apps implement exactly that.
+
+## License
+
+[MIT](LICENSE)
