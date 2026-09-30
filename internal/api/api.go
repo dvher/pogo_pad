@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/dvher/pogo_pad/internal/model"
 	"github.com/dvher/pogo_pad/internal/store"
@@ -23,13 +24,35 @@ const (
 	maxChangesSent = 5000
 )
 
-type Server struct {
-	store   *store.Store
-	version string
+// Signup modes: who may create an account over HTTP.
+const (
+	SignupClosed = "closed" // only the CLI creates users (the default)
+	SignupInvite = "invite" // anyone with an invite code from `pogo-pad invite create`
+	SignupOpen   = "open"   // anyone
+)
+
+// Config holds the settings that differ between a private server and a
+// hosted one.
+type Config struct {
+	Version string
+	Signup  string // SignupClosed, SignupInvite or SignupOpen; empty means closed
+	// TrustProxy takes the client address from the last X-Forwarded-For
+	// entry, for rate limiting behind a reverse proxy.
+	TrustProxy bool
 }
 
-func New(s *store.Store, version string) *Server {
-	return &Server{store: s, version: version}
+type Server struct {
+	store *store.Store
+	cfg   Config
+	// limiter throttles password checks per client address.
+	limiter *limiter
+}
+
+func New(s *store.Store, cfg Config) *Server {
+	if cfg.Signup == "" {
+		cfg.Signup = SignupClosed
+	}
+	return &Server{store: s, cfg: cfg, limiter: newLimiter(10, time.Minute)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -39,19 +62,32 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/e2e", s.auth(http.HandlerFunc(s.getE2E)))
 	mux.Handle("PUT /api/v1/e2e", s.auth(http.HandlerFunc(s.putE2E)))
 	mux.Handle("DELETE /api/v1/e2e", s.auth(http.HandlerFunc(s.deleteE2E)))
+
+	mux.HandleFunc("POST /api/v1/signup", s.signup)
+	mux.HandleFunc("POST /api/v1/login", s.login)
+	mux.Handle("POST /api/v1/logout", s.auth(http.HandlerFunc(s.logout)))
+	mux.Handle("GET /api/v1/account", s.auth(http.HandlerFunc(s.getAccount)))
+	mux.Handle("PUT /api/v1/account/password", s.auth(http.HandlerFunc(s.putPassword)))
+	mux.Handle("PUT /api/v1/account/email", s.auth(http.HandlerFunc(s.putEmail)))
+	mux.Handle("DELETE /api/v1/account", s.auth(http.HandlerFunc(s.deleteAccount)))
+	mux.Handle("GET /api/v1/devices", s.auth(http.HandlerFunc(s.listDevices)))
+	mux.Handle("DELETE /api/v1/devices/{id}", s.auth(http.HandlerFunc(s.deleteDevice)))
 	return logRequests(mux)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.version})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "signup": s.cfg.Signup})
 }
 
-type userKey struct{}
+type authKey struct{}
+
+// authOf returns the token that authenticated r and its user.
+func authOf(r *http.Request) store.Auth {
+	return r.Context().Value(authKey{}).(store.Auth)
+}
 
 // userID returns the id of the user whose token authenticated r.
-func userID(r *http.Request) int64 {
-	return r.Context().Value(userKey{}).(int64)
-}
+func userID(r *http.Request) int64 { return authOf(r).UserID }
 
 // auth checks the bearer token and records its owner in the request context,
 // so every handler behind it works only on that user's data.
@@ -62,7 +98,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		uid, valid, err := s.store.Authenticate(r.Context(), secret)
+		a, valid, err := s.store.Authenticate(r.Context(), secret)
 		if err != nil {
 			log.Printf("auth: %v", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
@@ -72,7 +108,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey{}, uid)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), authKey{}, a)))
 	})
 }
 
@@ -88,6 +124,10 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := s.store.Sync(r.Context(), userID(r), req.Cursor, req.Changes, pageSize)
+	if errors.Is(err, store.ErrQuota) {
+		writeError(w, http.StatusInsufficientStorage, "storage quota exceeded; delete some notes to sync new ones")
+		return
+	}
 	if err != nil {
 		log.Printf("sync: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

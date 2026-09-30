@@ -40,28 +40,50 @@ pogo-pad user create alice
 pogo-pad token create --user alice --name alice-phone
 ```
 
-Once there is more than one user, `token create` needs `--user`. `pogo-pad user delete NAME` removes a
+Once there is more than one user, `token create` needs `--user`. To let someone sign in from the apps
+with a password instead of a pasted token, give them one with
+`pogo-pad user create --password alice` or `pogo-pad user passwd alice`. `pogo-pad user delete NAME` removes a
 user with all their notes and tokens.
 
 When you upgrade from a single-user version, the existing notes, tokens and E2E settings move to a
 user called `default` (rename it with `pogo-pad user rename default NAME`). Devices keep syncing
 without changes.
 
+## Running it for other people
+
+A few `serve` options turn a private server into a small hosted service:
+
+- `--signup open` lets anyone create an account over HTTP. `--signup invite` requires a single-use
+  code from `pogo-pad invite create`. The default, `closed`, leaves user management to the CLI.
+- `--max-notes` and `--max-storage` (e.g. `50MB`) cap what each user keeps.
+- `--trust-proxy` takes client addresses from `X-Forwarded-For` for rate limiting. Use it only
+  behind a reverse proxy that sets that header.
+
+Sign-ins and other password checks are rate-limited per client address, and passwords are stored
+as Argon2id hashes. The endpoints are listed in [API.md](API.md#accounts).
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `serve [--addr] [--db] [--tls-cert --tls-key]` | Run the API |
-| `user create [--db] NAME` | Create a user |
+| `serve [--addr] [--db] [--tls-cert --tls-key] [--signup] [--max-notes] [--max-storage] [--trust-proxy]` | Run the API |
+| `user create [--db] [--email EMAIL] [--password] NAME` | Create a user, optionally with an email and a password for signing in |
 | `user list [--db]` | List users with their token and note counts |
 | `user rename [--db] OLD NEW` | Rename a user (their tokens keep working) |
+| `user email [--db] NAME EMAIL` | Set a user's email (`""` removes it) |
+| `user passwd [--db] [--clear] NAME` | Set or remove a user's password |
 | `user delete [--db] NAME` | Delete a user and all of their notes and tokens |
 | `token create [--db] [--user USER] --name NAME` | Create a device token (shown once; only a hash is stored) |
 | `token list [--db] [--user USER]` | List tokens and when each was last used |
 | `token revoke [--db] [--user USER] ID\|NAME` | Revoke a token |
+| `invite create\|list [--db]` | Make a single-use signup code, or list them |
+| `invite delete [--db] ID` | Delete an unused invite |
 | `version` | Print the version |
 
-Environment variables: `POGO_DB`, `POGO_ADDR`, `POGO_TLS_CERT`, `POGO_TLS_KEY`.
+Passwords are read from the terminal, or from the first line of stdin when piped.
+
+Environment variables: `POGO_DB`, `POGO_ADDR`, `POGO_TLS_CERT`, `POGO_TLS_KEY`, `POGO_SIGNUP`,
+`POGO_MAX_NOTES`, `POGO_MAX_STORAGE`, `POGO_TRUST_PROXY=1`.
 
 ## HTTPS
 
@@ -79,9 +101,9 @@ Tokens are sent in a header, so use HTTPS for anything outside a trusted home ne
 
 | Stored | Not stored |
 |---|---|
-| User names; per user: note ID, text, color, deleted flag, last-edit time, device ID | Window position, size, anchored or hidden state (these stay on each device) |
+| User names, emails and Argon2id password hashes; per user: note ID, text, color, deleted flag, last-edit time, device ID | Window position, size, anchored or hidden state (these stay on each device) |
 | With E2E on: only ciphertext, plus a salt and check value | Your E2E passphrase or key |
-| SHA-256 hashes of tokens | Tokens themselves |
+| SHA-256 hashes of tokens and invite codes | Tokens, invite codes and passwords themselves |
 
 ## Development
 

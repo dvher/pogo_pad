@@ -2,7 +2,11 @@ module github.com/dvher/pogo_pad
 
 go 1.26.7
 
-require modernc.org/sqlite v1.60.1
+require (
+	golang.org/x/crypto v0.57.0
+	golang.org/x/term v0.46.0
+	modernc.org/sqlite v1.60.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
