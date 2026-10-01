@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/mail"
 	"os"
@@ -541,7 +542,7 @@ func parseSize(in string) (int64, error) {
 		}
 	}
 	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || n < 0 {
+	if err != nil || n < 0 || n > math.MaxInt64/mult {
 		return 0, fmt.Errorf("invalid size %q", in)
 	}
 	return n * mult, nil
