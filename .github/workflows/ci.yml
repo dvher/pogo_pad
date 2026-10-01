@@ -125,7 +125,7 @@ jobs:
             server/go.sum
             desktop/go.sum
             mobile/core/go.sum
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: lts/*
           cache: npm
