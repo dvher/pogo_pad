@@ -63,8 +63,13 @@ pp() {
 old_rev="$(git rev-parse HEAD)"
 log "Fetching updates"
 git fetch --quiet
-if [[ "$(git rev-parse HEAD)" == "$(git rev-parse '@{u}')" && $force -eq 0 ]]; then
-	log "Already up to date ($(git describe --always)). Use --force to rebuild anyway."
+# The repo can be current while an older build still runs (after a manual
+# git pull, say), so compare what is running, not just the commits.
+running="$(curl -fsS "$HEALTH_URL" 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' || true)"
+[[ -n "$running" ]] || running="$(pp version 2>/dev/null || true)"
+if [[ "$(git rev-parse HEAD)" == "$(git rev-parse '@{u}')" && $force -eq 0 &&
+	"$running" == "$(git describe --tags --always)" ]]; then
+	log "Already up to date ($running). Use --force to rebuild anyway."
 	if [[ -n "$rename_default" ]]; then
 		pp user rename default "$rename_default"
 		pp user list
@@ -73,7 +78,7 @@ if [[ "$(git rev-parse HEAD)" == "$(git rev-parse '@{u}')" && $force -eq 0 ]]; t
 fi
 git merge --ff-only --quiet '@{u}'
 version="$(git describe --tags --always)"
-log "Updating $(git rev-parse --short "$old_rev") -> $version"
+log "Updating ${running:-unknown version} -> $version"
 git --no-pager log --oneline "$old_rev..HEAD" | sed 's/^/    /'
 
 # --- 2. Build (while the old version keeps running) ------------------------
