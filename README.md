@@ -31,6 +31,20 @@ go build -o pogo-pad ./cmd/pogo-pad
 ./pogo-pad serve --addr :8080           # database: ./data/pogo-pad.db
 ```
 
+## Updating
+
+From the clone on your server, run:
+
+```sh
+scripts/update.sh
+```
+
+It pulls `main` and builds the new version while the old one keeps running. Then it stops the
+server, copies the data into `./backups/` (the newest 10 are kept), starts the new version and
+checks `/api/v1/health`. If the check fails, it prints the commands to roll back. It uses
+`docker compose` when available. Otherwise, `--mode binary` builds `./pogo-pad` and restarts the
+`pogo-pad` systemd unit. Run `scripts/update.sh --help` for the options.
+
 ## Multiple users
 
 Every token belongs to one user, and a token only ever sees its own user's notes. To add someone:
